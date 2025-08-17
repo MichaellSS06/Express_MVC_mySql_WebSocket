@@ -1,5 +1,5 @@
 import { MongoClient, ObjectId, ServerApiVersion } from 'mongodb'
-const uri = ''
+const uri = 'mongodb+srv://michaellhuanca:2e6yNnjytYZPpMMo@cluster0.6q1wmej.mongodb.net/movies_db?retryWrites=true&w=majority&appName=Cluster0'
 //'mongodb+srv://user:???@cluster0.dhwmu.mongodb.net/?retryWrites=true&w=majority'
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -46,7 +46,7 @@ export class MovieModel {
         ...rest
       }
     })
-    console.log('Movies to show:', moviesToShow)
+    
     return moviesToShow
   }
 

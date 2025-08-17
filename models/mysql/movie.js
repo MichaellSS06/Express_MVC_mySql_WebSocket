@@ -12,10 +12,30 @@ const connectionString = process.env.DATABASE_URL ?? DEFAULT_CONFIG
 
 const connection = await mysql.createConnection(connectionString)
 
+async function Genres_for_movie (id_movie) {
+    const [genres_id] = await connection.query(
+      `SELECT genre_id FROM movie_genres WHERE movie_id = UUID_TO_BIN(?);`,
+      [id_movie]
+    )
+
+    if (genres_id.length === 0) {
+      return [] // no hay géneros
+    }
+
+    const ids = genres_id.map(g => g.genre_id)
+    
+    const placeholders = genres_id.map(() => '?').join(','); // ?, ?, ?
+   
+    const [genres] = await connection.query(
+      `SELECT name FROM genre WHERE id IN (${placeholders});`,
+      ids
+    )
+
+    return genres.map(g => g.name)  
+}
+
 export class MovieModel {
   static async getAll ({ genre }) {
-    console.log('getAll')
-
     if (genre) {
       const lowerCaseGenre = genre.toLowerCase()
 
@@ -24,7 +44,7 @@ export class MovieModel {
         'SELECT id, name FROM genre WHERE LOWER(name) = ?;',
         [lowerCaseGenre]
       )
-      console.log('genres', genres)
+     
       // no genre found
       if (genres.length === 0) return []
 
@@ -37,27 +57,34 @@ export class MovieModel {
         [id]
       )
       // la query a movie_genres
-      console.log('movieIds', movieIds)
-      const ids = movieIds.map(m => m["movie_id"])
+      const ids = movieIds.map(m => m.movie_id)
+      
       if (ids.length === 0) return [];
       const placeholders = ids.map(() => '?').join(','); // ?, ?, ?
-
-      const [movies_with_genres] = await connection.query(
+      
+      const [movies_filter_genres] = await connection.query(
         `SELECT title, year, director, duration, poster, rate, BIN_TO_UUID(id) id
           FROM movie WHERE id IN (${placeholders});`, ids)
-      // join
+ 
       // y devolver resultados..
-      console.log(ids)
-      console.log(placeholders)
-      console.log('movies_with_genres', movies_with_genres)
-      return movies_with_genres
+      const movies_with_genre = await Promise.all(movies_filter_genres.map(async movie => {
+        movie.genre = await Genres_for_movie(movie.id)
+        return movie
+      }))
+
+      return movies_with_genre
     }
 
     const [movies] = await connection.query(
       'SELECT title, year, director, duration, poster, rate, BIN_TO_UUID(id) id FROM movie;'
     )
 
-    return movies
+    const movies_with_genre = await Promise.all(movies.map(async movie => {
+      movie.genre = await Genres_for_movie(movie.id)
+      return movie
+    }))
+  
+    return movies_with_genre
   }
 
   static async getById ({ id }) {
@@ -66,15 +93,19 @@ export class MovieModel {
         FROM movie WHERE id = UUID_TO_BIN(?);`,
       [id]
     )
+    
+    const genres_for_movie = await Genres_for_movie(id)
 
     if (movies.length === 0) return null
 
-    return movies[0]
+    movies[0]['genre'] = genres_for_movie
+
+    return movies[0]  
   }
 
   static async create ({ input }) {
     const {
-      genre: genreInput, // genre is an array
+      genre, // genre is an array
       title,
       year,
       duration,
@@ -82,19 +113,30 @@ export class MovieModel {
       rate,
       poster
     } = input
-
+    
     // todo: crear la conexión de genre
-
+    const placeholders = genre.map(() => '?').join(',') // ?, ?, ?
+    
     // crypto.randomUUID()
     const [uuidResult] = await connection.query('SELECT UUID() uuid;')
     const [{ uuid }] = uuidResult
-
+    const params = [...genre, uuid]
     try {
       await connection.query(
         `INSERT INTO movie (id, title, year, director, duration, poster, rate)
           VALUES (UUID_TO_BIN("${uuid}"), ?, ?, ?, ?, ?, ?);`,
         [title, year, director, duration, poster, rate]
       )
+      
+      await connection.query(
+        `INSERT INTO movie_genres (movie_id, genre_id)
+          SELECT movie.id, genre.id FROM movie
+          JOIN genre ON genre.name IN (${placeholders})
+          WHERE movie.id = UUID_TO_BIN(?); `,
+        params
+      )
+
+      
     } catch (e) {
       // puede enviarle información sensible
       throw new Error('Error creating movie')
@@ -107,15 +149,74 @@ export class MovieModel {
         FROM movie WHERE id = UUID_TO_BIN(?);`,
       [uuid]
     )
-
+    
+    movies[0]['genre'] = genre
     return movies[0]
   }
 
   static async delete ({ id }) {
-    // ejercio fácil: crear el delete
+    //ejercio fácil: crear el delete
+    const [movie_deleted] = await connection.query(
+      `DELETE FROM movie WHERE id = UUID_TO_BIN(?);`,
+      [id]
+    )
+
+    const [genres_deleted] = await connection.query(
+      `DELETE FROM movie_genres WHERE movie_id = UUID_TO_BIN(?);`,
+      [id]
+    )
+
+    if (!(movie_deleted.affectedRows || genres_deleted.affectedRows)) return false
+
+    return true
+   
   }
 
   static async update ({ id, input }) {
     // ejercicio fácil: crear el update
+    const {genre, ...rest_input} = input
+    
+    const [movie] = await connection.query(
+      `SELECT title, year, director, duration, poster, rate, BIN_TO_UUID(id) id
+        FROM movie WHERE id = UUID_TO_BIN(?);`,
+      [id]
+    )
+    
+    const updatedMovie={...movie[0],...rest_input}
+    
+    const {
+      title,
+      year,
+      duration,
+      director,
+      rate,
+      poster
+    } = updatedMovie
+
+    const [movie_updated] = await connection.query(
+      `UPDATE movie SET title = ?, year = ?, director = ?, duration = ?, poster = ?, rate= ?
+        WHERE id = UUID_TO_BIN(?); `,
+      [title, year, director, duration, poster, rate, id]
+    )
+   
+    if (genre) {
+      const [genres_deleted] = await connection.query(
+        `DELETE FROM movie_genres WHERE movie_id = UUID_TO_BIN(?);`,
+        [id]
+      )
+      
+      const placeholders = genre.map(() => '?').join(',')
+      const params = [...genre, id]
+      const [genres_updated] = await connection.query(
+          `INSERT INTO movie_genres (movie_id, genre_id)
+            SELECT movie.id, genre.id FROM movie
+            JOIN genre ON genre.name IN (${placeholders})
+            WHERE movie.id = UUID_TO_BIN(?); `,
+          params
+      )
+    }
+
+    updatedMovie['genre'] = genre
+    return updatedMovie
   }
 }
